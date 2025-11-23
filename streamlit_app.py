@@ -7,97 +7,99 @@ import json
 from datetime import datetime
 import time
 
-st.set_page_config(page_title="AI Hedge Fund Agent – Reel Edition", layout="wide")
-st.title("🤖 AI Hedge Fund Agent (Exact Viral Reel – No Trading)")
+st.set_page_config(page_title="AI Hedge Fund Agent", layout="wide")
+st.title("AI Hedge Fund Agent (Exact Viral Reel – Fixed & Working)")
 
-# SAFE KEY LOADING: Tries secrets first, then sidebar input (fallback for deployment)
+# Key loading (already working for you)
 try:
     GROK_API_KEY = st.secrets["GROK_API_KEY"]
-    st.sidebar.success("✅ Key loaded from secrets!")
+    st.sidebar.success("Key loaded from secrets!")
 except:
-    GROK_API_KEY = st.sidebar.text_input("Grok API Key (x.ai)", type="password", help="Paste your key here if secrets fail")
-    if not GROK_API_KEY:
-        st.warning("👆 Add your Grok API key in the sidebar to get signals!")
+    st.warning("No secrets found – using sidebar fallback")
+    GROK_API_KEY = st.sidebar.text_input("Grok API Key", type="password")
+    if not GROK_API_KEY.startswith("gsk_"):
         st.stop()
 
-# SETTINGS
-symbol = st.sidebar.selectbox("Symbol", ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "BTC-USD", "IWM", "GLD"], index=0)
-interval = st.sidebar.selectbox("Timeframe", ["5m", "15m", "30m", "1h"], index=0)
-lookback = st.sidebar.slider("Candles to analyze", 30, 150, 80)
+# Settings
+symbol = st.sidebar.selectbox("Symbol", ["SPY","QQQ","AAPL","NVDA","TSLA","BTC-USD"], index=0)
+interval = st.sidebar.selectbox("Timeframe", ["5m","15m","30m","1h"], index=0)
+lookback = st.sidebar.slider("Candles", 30, 120, 80)
 
-# FETCH DATA
-@st.cache_data(ttl=60)  # Refresh max once per minute
+# FETCH DATA + FIX MultiIndex issue
+@st.cache_data(ttl=60)
 def get_data():
-    return yf.download(symbol, period="5d", interval=interval, progress=False)
+    df = yf.download(symbol, period="5d", interval=interval, progress=False)
+    # ← THIS LINE FIXES THE ERROR
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.droplevel(1, axis=1) if df.columns.nlevels > 1 else df
+    df = df.dropna()
+    return df
 
 data = get_data()
-if data.empty:
-    st.error("No data – check symbol or try again")
+if len(data) < 10:
+    st.error("Not enough data – try a different symbol/timeframe")
     st.stop()
 
-# AI BRAIN
+# AI DECISION
 def get_ai_decision():
     csv_data = data.tail(lookback)[['Open','High','Low','Close','Volume']].round(4).to_csv()
-
-    prompt = f"""
-You are an elite hedge-fund team combining Ray Dalio (risk-parity), Paul Tudor Jones (macro momentum), and George Soros (reflexivity).
+    prompt = f"""You are Ray Dalio + Paul Tudor Jones + George Soros combined.
 
 Symbol: {symbol} | Timeframe: {interval} | Current price: ${data['Close'].iloc[-1]:.2f}
 Last {lookback} candles:
 {csv_data}
 
-Return ONLY valid JSON – nothing else:
-{{
-  "action": "buy" | "sell" | "hold",
-  "size_usd": 25000,
-  "confidence": 0.94,
-  "reason": "one crisp sentence explaining the exact edge right now"
-}}
+Return ONLY valid JSON:
+{{"action":"buy","size_usd":25000,"confidence":0.94,"reason":"one crisp sentence"}}
+OR hold if no edge.
 """
 
     try:
-        r = requests.post("https://api.x.ai/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {GROK_API_KEY}"},
-                          json={"model": "grok-beta", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2},
-                          timeout=25)
-        r.raise_for_status()  # Raise error on bad response
-        content = r.json()["choices"][0]["message"]["content"]
+        r = requests.post(
+            "https://api.x.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROK_API_KEY}"},
+            json={"model": "grok-beta", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2},
+            timeout=25
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
         return json.loads(content)
     except Exception as e:
-        return {"action": "hold", "size_usd": 0, "confidence": 0, "reason": f"API error: {str(e)[:100]}..."}
+        return {"action":"hold","size_usd":0,"confidence":0,"reason":f"Error: {str(e)[:80]}"}
 
-# MAIN UI
-col1, col2 = st.columns([2, 1])
+# LAYOUT
+col1, col2 = st.columns([2.2, 1])
 
 with col1:
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=data.index,
-                                 open=data['Open'], high=data['High'],
-                                 low=data['Low'], close=data['Close']))
-    fig.update_layout(height=650, title=f"{symbol} – Live Chart", xaxis_rangeslider_visible=False)
+    fig = go.Figure(go.Candlestick(
+        x=data.index[-200:],
+        open=data['Open'][-200:], high=data['High'][-200:],
+        low=data['Low'][-200:], close=data['Close'][-200:]
+    ))
+    fig.update_layout(height=680, xaxis_rangeslider_visible=False, title=f"{symbol} – {interval}")
     st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-    st.markdown("### 🚀 AI Decision Engine")
-    if st.button("Get Latest Trade Signal", type="primary", use_container_width=True):
-        with st.spinner("Grok is thinking like Dalio + Soros + Jones..."):
+    st.markdown("### Instant AI Signal")
+    if st.button("Get Trade Signal", type="primary", use_container_width=True):
+        with st.spinner("Grok is analyzing..."):
             decision = get_ai_decision()
-            st.session_state.last_decision = decision
-            st.session_state.last_time = datetime.now().strftime("%H:%M:%S")
+            st.session_state.decision = decision
+            st.session_state.time = datetime.now().strftime("%H:%M:%S")
 
-    if 'last_decision' in st.session_state:
-        d = st.session_state.last_decision
-        st.markdown(f"### **{d['action'].upper()}**")
-        st.metric("Size", f"${d['size_usd']:,}")
-        st.metric("Confidence", f"{d['confidence']*100:.1f}%")
-        st.success(d['reason'])
-        st.caption(f"Generated at {st.session_state.last_time}")
+    if "decision" in st.session_state:
+        d = st.session_state.decision
+        action = d.get("action", "hold").upper()
+        color = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "⚪"
+        st.markdown(f"### {color} **{action} ${d.get('size_usd',0):,}**")
+        st.metric("Confidence", f"{d.get('confidence',0)*100:.1f}%")
+        st.success(d.get("reason","No reason returned"))
+        st.caption(f"Generated at {st.session_state.time}")
 
-        # Copy-paste for socials
-        copy_text = f"AI Hedge Fund Signal\n{symbol} → {d['action'].upper()} ${d['size_usd']:,}\n\"{d['reason']}\"\nConfidence {d['confidence']*100:.0f}%\n#AItrading #hedgefund"
+        copy_text = f"AI Hedge Fund Live Signal\n{symbol} → {action} ${d.get('size_usd',0):,}\n\"{d.get('reason')}\"\n#AItrading #hedgefund"
         st.code(copy_text, language=None)
 
-# Auto-refresh
-if st.sidebar.checkbox("Auto-refresh every 30 seconds"):
+# Auto-refresh option
+if st.sidebar.checkbox("Auto-refresh every 30s"):
     time.sleep(30)
     st.rerun()
