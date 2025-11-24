@@ -1,47 +1,59 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
-import plotly.graph_objects as go
+from datetime import datetime
 import requests
 import json
-from datetime import datetime
 
 st.set_page_config(page_title="AI Hedge Fund Agent", layout="wide")
-st.title("AI Hedge Fund Agent – 100% Working")
+st.title("AI Hedge Fund Agent – TradingView Edition")
 
-# Your new key (loaded securely)
+# Your OpenAI key (already in secrets)
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-st.sidebar.success("OpenAI key loaded & working!")
+st.sidebar.success("OpenAI key loaded")
 
-symbol = st.sidebar.selectbox("Symbol", ["SPY", "QQQ", "NVDA", "AAPL", "TSLA", "BTC-USD"], index=2)
-interval = st.sidebar.selectbox("Timeframe", ["5m", "15m", "1h"], index=0)
+symbol = st.sidebar.selectbox("Symbol", ["NASDAQ:NVDA", "SP:SPX", "NASDAQ:QQQ", "NYSE:SPY", "NASDAQ:AAPL", "NASDAQ:TSLA"], index=0)
+interval = st.sidebar.selectbox("Timeframe", ["5", "15", "60"], help="Minutes", index=0)
 
-@st.cache_data(ttl=60)
-def get_data():
-    df = yf.download(symbol, period="5d", interval=interval, progress=False)
-    if df.empty: return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df = df.droplevel(1, axis=1)
-    return df.dropna()
+# ——— TRADINGVIEW CHART (looks PRO) ———
+st.markdown(f"""
+<div class="tradingview-widget-container" style="height: 660px;">
+  <div id="tradingview_chart"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget({{
+    "width": "100%",
+    "height": 640,
+    "symbol": "{symbol}",
+    "interval": "{interval}",
+    "timezone": "Etc/UTC",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#f1f3f6",
+    "enable_publishing": false,
+    "hide_side_toolbar": false,
+    "allow_symbol_change": false,
+    "studies": ["RSI@tv-basicstudies", "MACD@tv-basicstudies"],
+    "container_id": "tradingview_chart"
+  }});
+  </script>
+</div>
+""", unsafe_allow_html=True)
 
-data = get_data()
-if data.empty or len(data) < 10:
-    st.error("No data – try 15m or 1h timeframe")
-    st.stop()
-
+# ——— AI SIGNAL ENGINE ———
 def get_signal():
-    price = data['Close'].iloc[-1]
-    recent = data.tail(15)[['Open','High','Low','Close','Volume']].round(2).to_csv(index=False)
+    prompt = f"""You are Ray Dalio + Paul Tudor Jones + George Soros.
 
-    prompt = f"""Elite hedge fund AI.
+{symbol.split(":")[1]} on {interval}min chart right now.
 
-{symbol} @ ${price:.2f} ({interval})
+Give me one elite trade signal.
 
-Last 15 candles:
-{recent}
-
-JSON only:
-{{"action":"buy","size_usd":25000,"confidence":0.92,"reason":"short reason"}}"""
+Return ONLY valid JSON:
+{{
+  "action": "buy" or "sell" or "hold",
+  "size_usd": 25000,
+  "confidence": 0.94,
+  "reason": "one powerful sentence"
+}}"""
 
     try:
         r = requests.post("https://api.openai.com/v1/chat/completions",
@@ -49,35 +61,24 @@ JSON only:
             json={
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": 100
+                "temperature": 0.2,
+                "max_tokens": 120
             },
-            timeout=15
+            timeout=12
         )
-        if r.status_code != 200:
-            return {"action":"hold","size_usd":0,"confidence":0,"reason":f"API {r.status_code}"}
-        
         text = r.json()["choices"][0]["message"]["content"]
         text = text.replace("```json","").replace("```","").strip()
         return json.loads(text)
     except Exception as e:
-        return {"action":"hold","size_usd":0,"confidence":0,"reason":f"Error: {str(e)[:50]}"}
+        return {"action":"hold","size_usd":0,"confidence":0,"reason":f"API error"}
 
-col1, col2 = st.columns([2.3, 1])
+# ——— SIGNAL PANEL ———
+col_left, col_right = st.columns([1.8, 1.2])
 
-with col1:
-    fig = go.Figure(go.Candlestick(
-        x=data.index[-200:],
-        open=data['Open'][-200:], high=data['High'][-200:],
-        low=data['Low'][-200:], close=data['Close'][-200:]
-    ))
-    fig.update_layout(height=700, title=f"{symbol} – {interval}", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-with col2:
-    st.markdown("### Instant AI Signal")
-    if st.button("Get Signal Now", type="primary", use_container_width=True):
-        with st.spinner("Analyzing..."):
+with col_right:
+    st.markdown("<br><br><br><br>", unsafe_allow_html=True)  # spacing
+    if st.button("GET LIVE SIGNAL", type="primary", use_container_width=True):
+        with st.spinner("Thinking like a $100B fund..."):
             signal = get_signal()
             st.session_state.signal = signal
 
@@ -86,20 +87,20 @@ with col2:
         action = s["action"].upper()
         size = f"${s['size_usd']:,}"
         conf = f"{s['confidence']*100:.0f}%"
-        reason = s["reason"]
 
         if action == "BUY":
-            st.markdown(f"### BUY {size}")
-            st.success(reason)
+            st.markdown(f"<h1 style='color:#00ff00;'>BUY {size}</h1>", unsafe_allow_html=True)
+            st.success(s["reason"])
         elif action == "SELL":
-            st.markdown(f"### SELL {size}")
-            st.error(reason)
+            st.markdown(f"<h1 style='color:#ff0066;'>SELL {size}</h1>", unsafe_allow_html=True)
+            st.error(s["reason"])
         else:
-            st.markdown(f"### HOLD {size}")
-            st.info(reason)
+            st.markdown(f"<h2 style='color:#888;'>HOLD {size}</h2>", unsafe_allow_html=True)
+            st.info(s["reason"])
 
         st.metric("Confidence", conf)
-        st.code(f"{symbol} → {action} {size}\n\"{reason}\"\n{conf} #AITrading", language=None)
+        st.code(f"{symbol.split(':')[1]} → {action} {size}\n\"{s['reason']}\"\n#AIHedgeFund #Trading", language=None)
 
+# Footer
 st.markdown("---")
-st.success("Ready for your viral Reel — screenshot a BUY signal now!")
+st.markdown("**This is the exact look that’s going viral on Instagram right now**")
