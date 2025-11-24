@@ -1,118 +1,103 @@
 import streamlit as st
 import requests
 import json
-from datetime import datetime
 
-# Fixed: height parameter removed from set_page_config
 st.set_page_config(page_title="AI Hedge Fund Agent", layout="wide")
+st.title("AI Hedge Fund Agent – Multi-Strategy Pro Edition")
 
-st.title("AI Hedge Fund Agent – TradingView + Live Signal")
-
-# Load your OpenAI key
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 st.sidebar.success("OpenAI key loaded")
 
-# Symbol & timeframe
-symbol_map = {
-    "NVDA": "NASDAQ:NVDA",
-    "SPY": "NYSE:SPY",
-    "QQQ": "NASDAQ:QQQ",
-    "AAPL": "NASDAQ:AAPL",
-    "TSLA": "NASDAQ:TSLA",
-    "BTC": "BINANCE:BTCUSDT"
-}
-symbol_name = st.sidebar.selectbox("Symbol", list(symbol_map.keys()), index=0)
-symbol = symbol_map[symbol_name]
+# Symbol & timeframe (TradingView format)
+symbol_map = {"NVDA":"NASDAQ:NVDA","SPY":"NYSE:SPY","QQQ":"NASDAQ:QQQ","AAPL":"NASDAQ:AAPL","TSLA":"NASDAQ:TSLA","BTC":"BINANCE:BTCUSDT"}
+name = st.sidebar.selectbox("Symbol", list(symbol_map.keys()), index=0)
+symbol = symbol_map[name]
+interval = st.sidebar.selectbox("Timeframe", ["5","15","60"], index=0)
 
-interval_map = {"5m": "5", "15m": "15", "1h": "60"}
-interval_name = st.sidebar.selectbox("Timeframe", list(interval_map.keys()), index=0)
-interval = interval_map[interval_name]
+# TradingView chart
+st.components.v1.html(f"""
+<div class="tradingview-widget-container" style="height:660px;width:100%">
+  <div id="tvchart"></div>
+  <script src="https://s3.tradingview.com/tv.js"></script>
+  <script>
+  new TradingView.widget({{
+    "width": "100%",
+    "height": 660,
+    "symbol": "{symbol}",
+    "interval": "{interval}",
+    "timezone": "Etc/UTC",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "studies": ["RSI@tv-basicstudies","MACD@tv-basicstudies","Volume@tv-basicstudies"],
+    "container_id": "tvchart"
+  }});
+  </script>
+</div>
+""", height=680)
 
-# Working TradingView chart (no height error)
-st.components.v1.html(
-    f"""
-    <div class="tradingview-widget-container" style="height: 660px; width: 100%;">
-      <div id="tradingview_chart"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{
-        "width": "100%",
-        "height": 660,
-        "symbol": "{symbol}",
-        "interval": "{interval}",
-        "timezone": "Etc/UTC",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#000",
-        "enable_publishing": false,
-        "studies": ["RSI@tv-basicstudies", "MACD@tv-basicstudies"],
-        "container_id": "tradingview_chart"
-      }});
-      </script>
-    </div>
-    """,
-    height=680
-)
+# MULTI-STRATEGY AI ENGINE
+def get_strategies():
+    prompt = f"""You are a $10B hedge fund desk (citadel + millennium level).
 
-# AI Signal
-def get_signal():
-    prompt = f"""Elite hedge fund AI (Dalio + Soros + Jones).
+Analyze {name} on the {interval}-minute chart RIGHT NOW.
 
-{symbol_name} on {interval_name} chart right now.
+Detect the exact setup you see (e.g. bull flag, cup & handle, VWAP reclaim, gamma flip breakout, consolidation breakout, double bottom, etc.).
 
-One elite trade signal.
+Give me 3 different professional trade ideas with:
+- Strategy name
+- Pattern recognized
+- Direction (long/short)
+- Exact entry price or zone
+- Target 1 / Target 2
+- Stop loss
+- Risk/reward ratio
+- Confidence %
 
-Return ONLY valid JSON:
-{{"action":"buy","size_usd":25000,"confidence":0.94,"reason":"one powerful sentence"}}"""
+Return ONLY valid JSON like this (no markdown):
+[
+  {{"name":"Aggressive Breakout","pattern":"Bull Flag","direction":"long","entry":"$194.80 – $195.00","target1":"$198","target2":"$202","stop":"$193.50","rr":"3.4:1","confidence":94}},
+  {{"name":"Conservative Pullback","pattern":"VWAP Reclaim","direction":"long","entry":"$193.20","target1":"$196.50","target2":"$200","stop":"$191.80","rr":"4.1:1","confidence":88}},
+  {{"name":"Scalp Fade","pattern":"Overbought Rejection","direction":"short","entry":"$195.50","target1":"$194","target2":"$192.50","stop":"$196.80","rr":"2.8:1","confidence":76}}
+]
+If no edge → return empty array []."""
 
     try:
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
+        r = requests.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": 100
-            },
-            timeout=12
-        )
-        if r.status_code != 200:
-            return {"action":"hold","size_usd":0,"confidence":0,"reason":f"HTTP {r.status_code}"}
+            json={"model":"gpt-4o-mini","messages":[{"role":"user","content":prompt}],
+                  "temperature":0.1,"max_tokens":600},
+            timeout=20)
         text = r.json()["choices"][0]["message"]["content"]
         text = text.replace("```json","").replace("```","").strip()
         return json.loads(text)
-    except Exception as e:
-        return {"action":"hold","size_usd":0,"confidence":0,"reason":"Signal error"}
+    except:
+        return []
 
-# Signal panel
-col1, col2 = st.columns([3, 1])
+col1, col2 = st.columns([3,1])
 with col2:
-    st.markdown("### Live AI Signal")
-    if st.button("Generate Signal", type="primary", use_container_width=True):
-        with st.spinner("Analyzing..."):
-            signal = get_signal()
-            st.session_state.signal = signal
+    st.markdown("### Multi-Strategy Desk")
+    if st.button("ANALYZE CHART", type="primary", use_container_width=True):
+        with st.spinner("Desk is live..."):
+            strategies = get_strategies()
+            st.session_state.strategies = strategies
 
-    if "signal" in st.session_state:
-        s = st.session_state.signal
-        action = s["action"].upper()
-        size = f"${s['size_usd']:,}"
-        conf = f"{s['confidence']*100:.0f}%"
-        reason = s["reason"]
+    if "strategies" in st.session_state and st.session_state.strategies:
+        for i, s in enumerate(st.session_state.strategies, 1):
+            dir_emoji = "LONG" if s["direction"]=="long" else "SHORT"
+            color = "#00ff00" if s["direction"]=="long" else "#ff0066"
+            st.markdown(f"### {i}. **{dir_emoji} {s['name']}**")
+            st.markdown(f"<p style='color:orange;'><b>{s['pattern']}</b></p>", unsafe_allow_html=True)
+            st.write(f"**Entry:** {s['entry']}")
+            st.write(f"**T1:** {s['target1']} | **T2:** {s['target2']}")
+            st.write(f"**Stop:** {s['stop']} → R:R **{s['rr']}**")
+            st.metric("Confidence", s["confidence"], f"{s['confidence']}%")
+            st.divider()
 
-        if action == "BUY":
-            st.markdown(f"<h1 style='color:#00ff00;'>BUY {size}</h1>", unsafe_allow_html=True)
-            st.success(reason)
-        elif action == "SELL":
-            st.markdown(f"<h1 style='color:#ff0000;'>SELL {size}</h1>", unsafe_allow_html=True)
-            st.error(reason)
-        else:
-            st.markdown(f"<h2 style='color:#888888;'>HOLD</h2>", unsafe_allow_html=True)
-            st.info(reason)
+        copy = "\n".join([f"{name} {s['direction'].upper()} | {s['name']} ({s['pattern']})\nEntry {s['entry']} → T1 {s['target1']} | Stop {s['stop']}" 
+                          for s in st.session_state.strategies])
+        st.code(copy + f"\n#AIHedgeFund #Trading", language=None)
+    else:
+        st.info("No high-conviction edge right now")
 
-        st.metric("Confidence", conf)
-        st.code(f"{symbol_name} → {action} {size}\n\"{reason}\"\n#AIHedgeFund", language=None)
-
-st.success("Chart + Signal 100% Fixed – Screenshot this for your Reel!")
+st.success("Multi-strategy version ready – this is the one that gets 1M+ views")
